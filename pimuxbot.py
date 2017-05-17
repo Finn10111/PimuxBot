@@ -1,33 +1,20 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# pip3 install dnspython
 
 import re
-import sys
-import imp
 import random
-import string
 import sleekxmpp
-import ConfigParser
-
-# This is necessary because I have installed vmm from source.
-# I will find a better way in the future.
-sys.path.append('/usr/local/src/vmm-0.6.2/build/lib/')
-from VirtualMailManager import handler
-from VirtualMailManager import account
-from VirtualMailManager import errors
+import configparser
+import smtplib
+from email.mime.text import MIMEText
+from sqlalchemy import Column, String, Integer, Boolean
+from sqlalchemy.ext.declarative import declarative_base
 from collections import OrderedDict
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
-
-# Python versions before 3.0 do not use UTF-8 encoding
-# by default. To ensure that Unicode is handled properly
-# throughout SleekXMPP, we will set the default encoding
-# ourselves to UTF-8.
-if sys.version_info < (3, 0):
-    reload(sys)
-    sys.setdefaultencoding('utf8')
-else:
-    raw_input = input
-
+Base = declarative_base()
 
 class PimuxBot(sleekxmpp.ClientXMPP):
 
@@ -35,10 +22,12 @@ class PimuxBot(sleekxmpp.ClientXMPP):
     This XMPP bot will get your commands and do the associated acitons.
     """
 
-    def __init__(self, jid, password):
+    def __init__(self, s, jid, password):
+        self.s = s
         sleekxmpp.ClientXMPP.__init__(self, jid, password)
         self.add_event_handler("session_start", self.start)
         self.add_event_handler("message", self.message)
+
 
     def start(self, event):
         self.send_presence()
@@ -46,7 +35,7 @@ class PimuxBot(sleekxmpp.ClientXMPP):
 
     def message(self, msg):
         if msg['type'] == 'chat':
-            pm = PimuxManager(msg['from'], msg['body'])
+            pm = PimuxManager(self.s, msg['from'], msg['body'])
             reply = pm.process()
             msg.reply(reply).send()
 
@@ -59,31 +48,23 @@ class PimuxManager(object):
 
     commands = OrderedDict([
         ('help', 'prints this help message'),
-        ('status', 'prints status and used services'),
-        ('register email', 'register your email address'),
-        ('register owncloud', 'register your ownCloud account'),
-        ('resetpw email', 'reset your email password'),
-        ('resetpw owncloud', 'reset your ownCloud password'),
-        ('get mailconfig', 'prints mail configurations and webmail url'),
-        ('moo', 'get a class of milk')
+        ('status', 'prints status'),
+        ('setmail', 'sets e-mail address for password recovery'),
+        ('code', 'validates e-mail address for password recovery via code')
     ])
 
-    def __init__(self, jid, body):
+    def __init__(self, s, jid, body):
+        self.s = s
         self.jid = re.sub(r'/+.*$', '', str(jid))
         self.body = body
-        if config.get('System', 'debug'):
-            print 'message from %s received' % self.jid
+        if config.getboolean('System', 'debug'):
+            print('message from %s received' % self.jid)
         if re.match('^.*@pimux.de$', self.jid):
             self.isPimuxUser = True
         else:
             self.isPimuxUser = False
-        self.config = ConfigParser.RawConfigParser()
+        self.config = configparser.RawConfigParser()
         self.config.read('pimuxbot.cfg')
-
-        self.handler = handler.Handler()
-        import __builtin__
-        if 'cfg_dget' not in __builtin__.__dict__:
-            self.handler.cfg_install()
 
     def process(self):
         if self.isPimuxUser:
@@ -93,18 +74,18 @@ class PimuxManager(object):
                     message = self.__help()
                 elif command == 'status':
                     message = self.__getStatus()
-                elif command == 'register email':
-                    message = self.__registerEmail()
-                elif command == 'register owncloud':
-                    message = self.__registerOwnCloud()
-                elif command == 'resetpw email':
-                    message = self.__resetPwEmail()
-                elif command == 'resetpw owncloud':
-                    message = self.__resetPwOwnCloud()
-                elif command == 'get mailconfig':
-                    message = self.__getMailConfig()
-                elif command == 'moo':
-                    message = 'mooooo!'
+                elif command == 'setmail':
+                    email = self.__getParam()
+                    if email:
+                        message = self.__setMail(email)
+                    else:
+                        message = 'usage: setmail foobar@example.org'
+                elif command == 'code':
+                    code = self.__getParam()
+                    if code:
+                        message = self.__validateCode(code)
+                    else:
+                        message = 'code not found'
             else:
                 message = ('Unknown command. Type "help" for a list of '
                            'commands.')
@@ -114,78 +95,99 @@ class PimuxManager(object):
         return message
 
     def __getCommand(self):
-        command = self.body.strip().lower()
+        command = self.body.split(' ', 1)[0]
         return command
 
+    def __getParam(self):
+        try:
+            param = self.body.split(' ', 1)[1]
+        except IndexError:
+            param = False
+        return param
+
     def __help(self):
-        helptext = 'Hello %s, this is pimux bot version 0.1 :-)\n' % self.jid
+        helptext = 'Hello %s, this is the pimux bot version.\n' % self.jid
         helptext += 'available commands:\n\n'
         for key in self.commands:
             helptext += key + ': ' + self.commands[key] + '\n'
         return helptext
 
     def __getStatus(self):
-        message = ('A more detailed status check will be implemented soon. '
-                   'If you receive these messages, the bot should be working.')
-        return message
-
-    def __registerEmail(self):
-        password = self.__genPassword()
-        if not self.__emailExists():
-            userInfo = self.handler.user_add(self.jid, password)
-            message = ('Done! Your password for you email address %s is %s. '
-                       'Please change it immediately. Visit %s for logging '
-                       ' in.') % (self.jid, password)
+        re = self.s.query(RecoveryEmail).filter(RecoveryEmail.jid==self.jid).one_or_none()
+        if re:
+            message = 'Current password recovery e-mail: %s' % re.email
+            if re.confirmed:
+                message += "\nYour e-mail address was successfully validated."
+            else:
+                message += "\nYour e-mail address was NOT validated yet and cannot be used."
         else:
-            message = "You already have an email account! (%s)" % self.jid
+            message = 'No password recovery e-mail configured.'
         return message
 
-    def __emailExists(self):
-        try:
-            userInfo = self.handler.user_info(self.jid)
-            if userInfo:
-                exists = True
-        except errors.VMMError:
-            # no such user
-            exists = False
-        return exists
+    def __sendMail(self, to, subject, message):
+        sender = 'pimux@pimux.de'
+        msg = MIMEText(message, 'plain')
+        msg['Subject'] = subject
+        msg['From'] = sender
+        msg['To'] = to
+        s = smtplib.SMTP('localhost')
+        s.ehlo()
+        s.sendmail(sender, to, msg.as_string())
+        s.quit()
 
-    def __genPassword(self):
-        s = string.lowercase + string.uppercase + string.digits
-        s = ''.join(random.sample(s, 10))
-        return s
+    def __setMail(self, email):
+        code = random.randint(1000,9999)
+        re = RecoveryEmail(jid=self.jid, email=email, code=code)
+        self.s.merge(re)
+        self.s.commit()
+        msg = (
+            'Please verify your e-mail address by sending '
+            '"code %s" via XMPP back.'
+        ) % str(code)
+        self.__sendMail(email, 'verification code for pimux.de', msg)
+        message =(
+            'A confirmation code was sent to %s. '
+            'Please now send "code XXXX" back where XXXX is your '
+            'code to verify your e-mail address.'
+            ) % email
+        return message
 
-    def __resetPwEmail(self):
-        if self.__emailExists():
-            password = self.__genPassword()
-            self.handler.user_password(self.jid, password)
-            message = 'Your email password has been reset: %s' % password
+    def __validateCode(self, code):
+        re = self.s.query(RecoveryEmail).filter(RecoveryEmail.jid==self.jid, RecoveryEmail.code==code)
+        if re:
+            re = RecoveryEmail(jid=self.jid, confirmed=True, code=None)
+            self.s.merge(re)
+            self.s.commit()
+            message = 'code valid'
         else:
-            message = 'You don\'t have a registered email Address at pimux.de'
+            message = 'code invalid'
         return message
 
-    def __registerOwnCloud(self):
-        message = 'ownCloud registration will be available soon'
-        return message
-
-    def __resetPwOwnCloud(self):
-        message = 'ownCloud registration will be available soon'
-        return message
-
-    def __getMailConfig(self):
-        message = 'WebMail URL: %s\n' % self.config.get('Mail', 'webmail')
-        message += 'POP Server: %s\n' % self.config.get('Mail', 'pop')
-        message += 'IMAP Server: %s\n' % self.config.get('Mail', 'imap')
-        message += 'SMTP Server: %s\n' % self.config.get('Mail', 'smtp')
-        return message
+class RecoveryEmail(Base):
+    __tablename__ = 'recovery_email'
+    jid = Column(String(255), primary_key=True)
+    email = Column(String(255), nullable=False)
+    confirmed = Column(Boolean, default=False)
+    code = Column(Integer, nullable=True)
 
 
 if __name__ == '__main__':
-    config = ConfigParser.RawConfigParser()
-    config.read('pimuxbot.cfg')
+    config = configparser.RawConfigParser()
+    config.read('/etc/pimuxbot.cfg')
     jid = config.get('Account', 'jid')
     password = config.get('Account', 'password')
-    xmpp = PimuxBot(jid, password)
+    db_user = config.get('DB', 'username')
+    db_pass = config.get('DB', 'password')
+    db_host = config.get('DB', 'host')
+    db_name = config.get('DB', 'name')
+
+    engine = create_engine('postgresql://%s:%s@%s/%s' % (db_user, db_pass, db_host, db_name))
+    session = sessionmaker()
+    session.configure(bind=engine)
+    Base.metadata.create_all(engine)
+    s = session()
+
+    xmpp = PimuxBot(s, jid, password)
     xmpp.register_plugin('xep_0030')  # Service Discovery
     xmpp.register_plugin('xep_0004')  # Data Forms
     xmpp.register_plugin('xep_0060')  # PubSub
@@ -193,9 +195,11 @@ if __name__ == '__main__':
     #xmpp.ca_certs = config.get('System', 'capath')
 
     # Connect to the XMPP server and start processing XMPP stanzas.
-    if xmpp.connect():
-        if config.get('System', 'debug'):
-            print 'connecting as %s' % jid
+    if config.getboolean('System', 'debug'):
+        print('beginning connection as %s' % jid)
+    if xmpp.connect(reattempt=True):
+        if config.getboolean('System', 'debug'):
+            print('connected as %s' % jid)
         xmpp.process(block=True)
         print("Done")
     else:
