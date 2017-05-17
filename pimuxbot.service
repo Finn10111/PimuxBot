@@ -1,0 +1,15 @@
+[Unit]
+Description=PimuxBot Service
+Requires=postgresql.unit
+After=postgresql.target
+
+[Service]
+Type=simple
+User=pimuxbot
+ExecStart=/usr/local/bin/pimuxbot.py
+Restart=always
+RestartSec=30
+
+
+[Install]
+WantedBy=multi-user.target
