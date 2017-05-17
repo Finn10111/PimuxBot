@@ -106,7 +106,7 @@ class PimuxManager(object):
         return param
 
     def __help(self):
-        helptext = 'Hello %s, this is the pimux bot version.\n' % self.jid
+        helptext = 'Hello %s, I am the bot of pimux.de.\n' % self.jid
         helptext += 'available commands:\n\n'
         for key in self.commands:
             helptext += key + ': ' + self.commands[key] + '\n'
