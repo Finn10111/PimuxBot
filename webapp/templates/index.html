@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>pimux.de password recovery</title>
+  <!--<link rel="stylesheet" href="styles.css">-->
+</head>
+
+<body>
+{% block body %}
+<form method="POST">
+    <h1>pimux.de password recovery</h1>
+    <label for="jid">Jabber-ID / Account</label>
+	<input type="text" id="jid" name="jid">
+    <input type="submit" value="send password">
+</form>
+{% endblock %}
+</body>
+</html>
