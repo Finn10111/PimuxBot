@@ -180,8 +180,22 @@ if __name__ == '__main__':
     db_pass = config.get('DB', 'password')
     db_host = config.get('DB', 'host')
     db_name = config.get('DB', 'name')
+    db_type = config.get('DB', 'type')
 
+# test if the db type is even set
+try: 
+    db_type
+# if it is not set print an error
+except NameError:
+    if config.getboolean('System', 'debug'):
+            print('Database Type is not set.')
+
+if db_type = 'postgres':
     engine = create_engine('postgresql://%s:%s@%s/%s' % (db_user, db_pass, db_host, db_name))
+
+if db_type = 'mysql:'    
+    engine = create_engine('mysql+mysqlconnector://%s:%s@%s/%s' % (db_user, db_pass, db_host, db_name))
+
     session = sessionmaker()
     session.configure(bind=engine)
     Base.metadata.create_all(engine)
